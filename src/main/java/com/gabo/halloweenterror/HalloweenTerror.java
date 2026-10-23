@@ -16,7 +16,6 @@ import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
-import net.minecraft.util.RotationSegment;
 import net.minecraft.world.BossEvent;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
@@ -256,7 +255,7 @@ public class HalloweenTerror {
 
             float yaw = behind ? p.getYRot() : p.getYRot() + 180f;
             BlockState state = Blocks.OAK_SIGN.defaultBlockState()
-                .setValue(StandingSignBlock.ROTATION, RotationSegment.convertToSegment(yaw));
+                .setValue(StandingSignBlock.ROTATION, Mth.floor(yaw * 16.0F / 360.0F + 0.5F) & 15);
             level.setBlock(pos, state, 3);
 
             BlockEntity be = level.getBlockEntity(pos);
