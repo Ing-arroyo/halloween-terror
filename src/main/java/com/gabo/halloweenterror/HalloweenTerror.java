@@ -4,6 +4,7 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.Holder;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
@@ -20,6 +21,7 @@ import net.minecraft.world.BossEvent;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobCategory;
@@ -27,6 +29,7 @@ import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.item.DyeColor;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.StandingSignBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -70,6 +73,7 @@ public class HalloweenTerror {
     static final int SIGN_LIFETIME = 45;                  // cuánto dura un cartel
     static final int BOSS_LIFETIME = 240;                 // cuánto dura un jefe si nadie lo mata
     static final float BOSS_HEALTH_MULT = 3.0f;           // multiplicador de vida del jefe
+    static final float GAS_CHANCE = 0.30f;                // probabilidad de que el jefe sea el "Gas Negro" (0 = nunca, 1 = siempre)
     // =================================================================
 
     private static boolean enabled = true;
@@ -84,7 +88,7 @@ public class HalloweenTerror {
     private record PendingSign(ServerLevel level, BlockPos pos, long expireTick) {}
 
     private static class Boss {
-        Mob mob; ServerBossEvent bar; ServerPlayer target; long expireTick;
+        Mob mob; ServerBossEvent bar; ServerPlayer target; long expireTick; boolean gas;
     }
 
     static final String[][] SIGN_MESSAGES = {
@@ -295,11 +299,8 @@ public class HalloweenTerror {
         if (mobTypes == null) {
             mobTypes = new ArrayList<>();
             for (EntityType<?> t : BuiltInRegistries.ENTITY_TYPE) {
-                MobCategory c = t.getCategory();
                 if (!t.canSummon() || t == EntityType.ENDER_DRAGON) continue;
-                if (c == MobCategory.MISC || c == MobCategory.WATER_CREATURE
-                    || c == MobCategory.WATER_AMBIENT || c == MobCategory.UNDERGROUND_WATER_CREATURE
-                    || c == MobCategory.AXOLOTLS) continue;
+                if (t.getCategory() != MobCategory.MONSTER) continue; // solo hostiles
                 mobTypes.add(t);
             }
         }
@@ -320,7 +321,8 @@ public class HalloweenTerror {
             BlockPos pos = findFloor(level, x, z, p.getBlockY());
             if (pos == null) continue;
 
-            EntityType<?> type = types.get(r.nextInt(types.size()));
+            boolean gas = r.nextFloat() < GAS_CHANCE;
+            EntityType<?> type = gas ? EntityType.VEX : types.get(r.nextInt(types.size()));
             Entity ent = type.create(level);
             if (!(ent instanceof Mob mob)) { if (ent != null) ent.discard(); continue; }
 
@@ -329,6 +331,11 @@ public class HalloweenTerror {
 
             mob.finalizeSpawn(level, level.getCurrentDifficultyAt(pos), MobSpawnType.EVENT, null);
             mob.setPersistenceRequired();
+            if (gas) {
+                // Gas Negro: un Vex invisible, sin espada, envuelto en humo oscuro
+                mob.setItemSlot(EquipmentSlot.MAINHAND, ItemStack.EMPTY);
+                mob.addEffect(new MobEffectInstance(MobEffects.INVISIBILITY, MobEffectInstance.INFINITE_DURATION, 0, false, false, false));
+            }
 
             AttributeInstance hp = mob.getAttribute(Attributes.MAX_HEALTH);
             if (hp != null) {
@@ -339,7 +346,7 @@ public class HalloweenTerror {
             mob.setTarget(p);
             level.addFreshEntity(mob);
 
-            String title = BOSS_TITLES[r.nextInt(BOSS_TITLES.length)];
+            String title = gas ? "El Gas Negro" : BOSS_TITLES[r.nextInt(BOSS_TITLES.length)];
             Component name = Component.literal("☠ " + title + " ☠").withStyle(ChatFormatting.DARK_RED, ChatFormatting.BOLD);
             ServerBossEvent bar = new ServerBossEvent(name,
                 BossEvent.BossBarColor.PURPLE, BossEvent.BossBarOverlay.NOTCHED_10);
@@ -348,7 +355,7 @@ public class HalloweenTerror {
             bar.addPlayer(p);
 
             Boss b = new Boss();
-            b.mob = mob; b.bar = bar; b.target = p;
+            b.mob = mob; b.bar = bar; b.target = p; b.gas = gas;
             b.expireTick = ticks + BOSS_LIFETIME * 20L;
             BOSSES.add(b);
 
@@ -380,6 +387,24 @@ public class HalloweenTerror {
                 continue;
             }
             b.bar.setProgress(Mth.clamp(b.mob.getHealth() / b.mob.getMaxHealth(), 0f, 1f));
+            if (b.gas) gasEffects(b);
+        }
+    }
+
+    private static void gasEffects(Boss b) {
+        if (!(b.mob.level() instanceof ServerLevel sl)) return;
+        double x = b.mob.getX(), y = b.mob.getY() + 0.6, z = b.mob.getZ();
+        if (ticks % 2 == 0) {
+            sl.sendParticles(ParticleTypes.LARGE_SMOKE, x, y, z, 8, 0.45, 0.45, 0.45, 0.01);
+            sl.sendParticles(ParticleTypes.SQUID_INK, x, y, z, 3, 0.4, 0.4, 0.4, 0.01);
+        }
+        if (b.target != null && !b.target.hasDisconnected()) {
+            if (ticks % 100 == 0) {
+                playAt(b.target, SoundEvents.GHAST_AMBIENT, x, y, z, 1.2f, 0.5f);
+            }
+            if (ticks % 40 == 0 && b.target.distanceToSqr(b.mob) < 64) { // a menos de 8 bloques
+                b.target.addEffect(new MobEffectInstance(MobEffects.DARKNESS, 100, 0, false, false, false));
+            }
         }
     }
 
